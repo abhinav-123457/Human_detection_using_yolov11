@@ -13,7 +13,7 @@ RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goog
 
 # Cache the model loading
 @st.cache_resource
-def load_model(model_path="best (1).pt"):
+def load_model(model_path="yolo11n_human_detection_final.pt"):
     return YOLO(model_path)
 
 # Define a video frame processor class
@@ -32,8 +32,8 @@ class VideoProcessor:
             iou=self.iou_threshold,
             verbose=False
         )
-        # Draw bounding boxes and labels
-        annotated_img = results[0].plot()
+        # Draw bounding boxes with only "human" label
+        annotated_img = results[0].plot(labels=True, conf=False)
         return av.VideoFrame.from_ndarray(annotated_img, format="bgr24")
 
 # Function to process uploaded images
@@ -46,7 +46,8 @@ def process_image(image, model, conf_threshold, iou_threshold):
         iou=iou_threshold,
         verbose=False
     )
-    annotated_img = results[0].plot()
+    # Draw bounding boxes with only "human" label
+    annotated_img = results[0].plot(labels=True, conf=False)
     annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
     return Image.fromarray(annotated_img)
 
