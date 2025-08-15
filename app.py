@@ -3,6 +3,7 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 from PIL import Image
+from io import BytesIO
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
 import os
@@ -133,8 +134,12 @@ def main():
             detected_image = process_image(image, model, conf_threshold, iou_threshold)
             st.image(detected_image, caption="Detected Humans", use_column_width=True)
             
+            # Convert detected image to bytes for download
+            img_buffer = BytesIO()
+            detected_image.save(img_buffer, format="PNG")
+            img_buffer.seek(0)
+            
             # Download button for processed image
-            img_buffer = detected_image._to_bytes(format="PNG")
             st.download_button(
                 label="Download Detected Image",
                 data=img_buffer,
