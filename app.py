@@ -49,7 +49,30 @@ def process_image(image, model, conf_threshold, iou_threshold):
     # Draw bounding boxes with only "human" label
     annotated_img = results[0].plot(labels=True, conf=False)
     annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(annotated_img)
+    return Image.fromarray(annotated_img), len(results[0].boxes)  # Return image and detection count
+
+# Auto-adjust thresholds based on detection count
+def auto_adjust_thresholds(detection_count, current_conf, current_iou):
+    # Define thresholds for adjustment
+    min_detections = 1  # Minimum desired detections
+    max_detections = 10  # Maximum desired detections
+    conf_step = 0.05
+    iou_step = 0.05
+
+    # Adjust confidence threshold
+    if detection_count > max_detections:
+        # Too many detections, increase confidence threshold to be stricter
+        new_conf = min(current_conf + conf_step, 1.0)
+        new_iou = current_iou
+        return new_conf, new_iou, "Increased confidence threshold to reduce detections."
+    elif detection_count < min_detections:
+        # Too few detections, decrease confidence threshold to be more lenient
+        new_conf = max(current_conf - conf_step, 0.1)
+        new_iou = current_iou
+        return new_conf, new_iou, "Decreased confidence threshold to increase detections."
+    else:
+        # Detection count is within acceptable range, no adjustment needed
+        return current_conf, current_iou, "Thresholds unchanged: detection count within range."
 
 def main():
     st.set_page_config(page_title="YOLOv11 Human Detection", layout="wide")
@@ -58,7 +81,7 @@ def main():
     st.markdown("""
         This app performs real-time human detection using a trained YOLOv11 model.
         Use your webcam for live detection or upload an image for static analysis.
-        The model is cached for faster loading.
+        The model is cached for faster loading. Auto-adjustment of thresholds is available.
     """)
     
     # Sidebar configuration
@@ -71,23 +94,47 @@ def main():
         help="Path to your trained YOLOv11 model (.pt file)"
     )
     
-    # Confidence and IoU thresholds
+    # Initialize session state for thresholds
+    if 'conf_threshold' not in st.session_state:
+        st.session_state.conf_threshold = 0.5
+    if 'iou_threshold' not in st.session_state:
+        st.session_state.iou_threshold = 0.45
+    if 'auto_adjust' not in st.session_state:
+        st.session_state.auto_adjust = False
+    if 'adjustment_message' not in st.session_state:
+        st.session_state.adjustment_message = ""
+
+    # Auto-adjustment toggle
+    st.session_state.auto_adjust = st.sidebar.checkbox(
+        "Enable Auto-Adjustment of Thresholds",
+        value=st.session_state.auto_adjust,
+        help="Automatically adjust Confidence and IoU thresholds based on detection count"
+    )
+    
+    # Confidence and IoU thresholds (manual sliders, disabled if auto-adjust is on)
     conf_threshold = st.sidebar.slider(
         "Confidence Threshold",
         min_value=0.1,
         max_value=1.0,
-        value=0.5,
+        value=st.session_state.conf_threshold,
         step=0.05,
-        help="Filter detections below this confidence score"
+        help="Filter detections below this confidence score",
+        disabled=st.session_state.auto_adjust
     )
     iou_threshold = st.sidebar.slider(
         "IoU Threshold",
         min_value=0.1,
         max_value=1.0,
-        value=0.45,
+        value=st.session_state.iou_threshold,
         step=0.05,
-        help="Intersection over Union threshold for Non-Max Suppression"
+        help="Intersection over Union threshold for Non-Max Suppression",
+        disabled=st.session_state.auto_adjust
     )
+    
+    # Update session state if manual sliders are used
+    if not st.session_state.auto_adjust:
+        st.session_state.conf_threshold = conf_threshold
+        st.session_state.iou_threshold = iou_threshold
     
     # Load model with caching
     model = None
@@ -102,6 +149,10 @@ def main():
         st.sidebar.warning("Please provide a valid model path.")
         return
     
+    # Display adjustment message
+    if st.session_state.adjustment_message:
+        st.sidebar.info(st.session_state.adjustment_message)
+    
     # Tabs for webcam and image upload
     tab1, tab2 = st.tabs(["Webcam Detection", "Image Upload"])
     
@@ -113,7 +164,7 @@ def main():
             key="human-detection",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=lambda: VideoProcessor(model, conf_threshold, iou_threshold),
+            video_processor_factory=lambda: VideoProcessor(model, st.session_state.conf_threshold, st.session_state.iou_threshold),
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
@@ -132,8 +183,19 @@ def main():
             
             # Process and display detected image
             st.write("Processing image...")
-            detected_image = process_image(image, model, conf_threshold, iou_threshold)
-            st.image(detected_image, caption="Detected Humans", use_column_width=True)
+            detected_image, detection_count = process_image(image, model, st.session_state.conf_threshold, st.session_state.iou_threshold)
+            st.image(detected_image, caption=f"Detected Humans ({detection_count} detections)", use_column_width=True)
+            
+            # Auto-adjust thresholds if enabled
+            if st.session_state.auto_adjust:
+                new_conf, new_iou, message = auto_adjust_thresholds(
+                    detection_count,
+                    st.session_state.conf_threshold,
+                    st.session_state.iou_threshold
+                )
+                st.session_state.conf_threshold = new_conf
+                st.session_state.iou_threshold = new_iou
+                st.session_state.adjustment_message = message
             
             # Convert detected image to bytes for download
             img_buffer = BytesIO()
