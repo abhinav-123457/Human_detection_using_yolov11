@@ -106,4 +106,4 @@ results = model.predict(source="path/to/image_or_video", save=True)
 - Monitor GPU usage in Colab to avoid runtime disconnection.
 - Adjust `epochs`, `batch`, or `imgsz` based on your dataset size and available resources.
 - For larger datasets or more complex tasks, consider using a larger YOLOv11 model (e.g., `yolo11s.pt` or `yolo11m.pt`).
-```
+
