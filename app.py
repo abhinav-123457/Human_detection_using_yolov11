@@ -7,6 +7,11 @@ from io import BytesIO
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
 import os
+import logging
+
+# Set up logging for debugging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # RTC configuration for WebRTC
 RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
@@ -14,7 +19,11 @@ RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goog
 # Cache the model loading
 @st.cache_resource
 def load_model(model_path="yolo11n_human_detection_final.pt"):
-    return YOLO(model_path)
+    try:
+        return YOLO(model_path)
+    except Exception as e:
+        logger.error(f"Failed to load model: {e}")
+        raise
 
 # Define a video frame processor class
 class VideoProcessor:
@@ -22,56 +31,60 @@ class VideoProcessor:
         self.model = model
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
+        logger.info(f"VideoProcessor initialized with conf_threshold={conf_threshold}, iou_threshold={iou_threshold}")
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        img = frame.to_ndarray(format="bgr24")
-        # Run YOLO inference
-        results = self.model.predict(
-            img,
-            conf=self.conf_threshold,
-            iou=self.iou_threshold,
+        try:
+            img = frame.to_ndarray(format="bgr24")
+            # Run YOLO inference
+            results = self.model.predict(
+                img,
+                conf=self.conf_threshold,
+                iou=self.iou_threshold,
+                verbose=False
+            )
+            # Draw bounding boxes with only "human" label
+            annotated_img = results[0].plot(labels=True, conf=False)
+            return av.VideoFrame.from_ndarray(annotated_img, format="bgr24")
+        except Exception as e:
+            logger.error(f"Error processing webcam frame: {e}")
+            raise
+
+# Function to process uploaded images
+def process_image(image, model, conf_threshold, iou_threshold):
+    try:
+        img_array = np.array(image)
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        results = model.predict(
+            img_array,
+            conf=conf_threshold,
+            iou=iou_threshold,
             verbose=False
         )
         # Draw bounding boxes with only "human" label
         annotated_img = results[0].plot(labels=True, conf=False)
-        return av.VideoFrame.from_ndarray(annotated_img, format="bgr24")
-
-# Function to process uploaded images
-def process_image(image, model, conf_threshold, iou_threshold):
-    img_array = np.array(image)
-    img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    results = model.predict(
-        img_array,
-        conf=conf_threshold,
-        iou=iou_threshold,
-        verbose=False
-    )
-    # Draw bounding boxes with only "human" label
-    annotated_img = results[0].plot(labels=True, conf=False)
-    annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(annotated_img), len(results[0].boxes)  # Return image and detection count
+        annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(annotated_img), len(results[0].boxes)
+    except Exception as e:
+        logger.error(f"Error processing image: {e}")
+        raise
 
 # Auto-adjust thresholds based on detection count
 def auto_adjust_thresholds(detection_count, current_conf, current_iou):
-    # Define thresholds for adjustment
     min_detections = 1  # Minimum desired detections
     max_detections = 10  # Maximum desired detections
     conf_step = 0.05
     iou_step = 0.05
 
-    # Adjust confidence threshold
     if detection_count > max_detections:
-        # Too many detections, increase confidence threshold to be stricter
         new_conf = min(current_conf + conf_step, 1.0)
         new_iou = current_iou
         return new_conf, new_iou, "Increased confidence threshold to reduce detections."
     elif detection_count < min_detections:
-        # Too few detections, decrease confidence threshold to be more lenient
         new_conf = max(current_conf - conf_step, 0.1)
         new_iou = current_iou
         return new_conf, new_iou, "Decreased confidence threshold to increase detections."
     else:
-        # Detection count is within acceptable range, no adjustment needed
         return current_conf, current_iou, "Thresholds unchanged: detection count within range."
 
 def main():
@@ -93,6 +106,8 @@ def main():
         st.session_state.auto_adjust = False
     if 'adjustment_message' not in st.session_state:
         st.session_state.adjustment_message = ""
+    if 'webcam_error' not in st.session_state:
+        st.session_state.webcam_error = ""
 
     # Sidebar configuration
     st.sidebar.header("Model Configuration")
@@ -144,6 +159,7 @@ def main():
             st.sidebar.success("Model loaded successfully!")
         except Exception as e:
             st.sidebar.error(f"Error loading model: {e}")
+            logger.error(f"Model loading failed: {e}")
             return
     else:
         st.sidebar.warning("Please provide a valid model path.")
@@ -160,56 +176,80 @@ def main():
         st.header("Webcam Detection")
         st.write("Click 'Start' to begin real-time human detection using your webcam.")
         
-        # Pass current threshold values directly to avoid session state issues
-        webrtc_ctx = webrtc_streamer(
-            key="human-detection",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=lambda: VideoProcessor(model, conf_threshold, iou_threshold),
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-        )
+        # Display webcam error if any
+        if st.session_state.webcam_error:
+            st.error(f"Webcam Error: {st.session_state.webcam_error}")
+            st.markdown("""
+                **Troubleshooting Tips**:
+                - Ensure your webcam is connected and accessible.
+                - Check browser permissions for camera access.
+                - Try a different browser (Chrome or Firefox recommended).
+                - Verify that the STUN server is accessible.
+            """)
         
-        if webrtc_ctx.state.playing:
-            st.info("Webcam detection is active. Adjust settings in the sidebar.")
+        # Initialize webrtc_streamer with error handling
+        try:
+            webrtc_ctx = webrtc_streamer(
+                key="human-detection",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration=RTC_CONFIGURATION,
+                video_processor_factory=lambda: VideoProcessor(model, conf_threshold, iou_threshold),
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
+            )
+            
+            if webrtc_ctx.state.playing:
+                st.info("Webcam detection is active. Adjust settings in the sidebar.")
+                st.session_state.webcam_error = ""  # Clear error if webcam is working
+            else:
+                st.session_state.webcam_error = "Webcam stream not active. Click 'Start' or check your webcam."
+        
+        except Exception as e:
+            st.session_state.webcam_error = f"Failed to initialize webcam: {str(e)}"
+            logger.error(f"WebRTC initialization failed: {e}")
+            st.error(st.session_state.webcam_error)
     
     with tab2:
         st.header("Image Upload")
         uploaded_file = st.file_uploader("Upload an image for detection", type=["jpg", "jpeg", "png"])
         
         if uploaded_file is not None:
-            # Display uploaded image
-            image = Image.open(uploaded_file)
-            st.image(image, caption="Uploaded Image", use_column_width=True)
-            
-            # Process and display detected image
-            st.write("Processing image...")
-            detected_image, detection_count = process_image(image, model, st.session_state.conf_threshold, st.session_state.iou_threshold)
-            st.image(detected_image, caption=f"Detected Humans ({detection_count} detections)", use_column_width=True)
-            
-            # Auto-adjust thresholds if enabled
-            if st.session_state.auto_adjust:
-                new_conf, new_iou, message = auto_adjust_thresholds(
-                    detection_count,
-                    st.session_state.conf_threshold,
-                    st.session_state.iou_threshold
+            try:
+                # Display uploaded image
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded Image", use_column_width=True)
+                
+                # Process and display detected image
+                st.write("Processing image...")
+                detected_image, detection_count = process_image(image, model, st.session_state.conf_threshold, st.session_state.iou_threshold)
+                st.image(detected_image, caption=f"Detected Humans ({detection_count} detections)", use_column_width=True)
+                
+                # Auto-adjust thresholds if enabled
+                if st.session_state.auto_adjust:
+                    new_conf, new_iou, message = auto_adjust_thresholds(
+                        detection_count,
+                        st.session_state.conf_threshold,
+                        st.session_state.iou_threshold
+                    )
+                    st.session_state.conf_threshold = new_conf
+                    st.session_state.iou_threshold = new_iou
+                    st.session_state.adjustment_message = message
+                
+                # Convert detected image to bytes for download
+                img_buffer = BytesIO()
+                detected_image.save(img_buffer, format="PNG")
+                img_buffer.seek(0)
+                
+                # Download button for processed image
+                st.download_button(
+                    label="Download Detected Image",
+                    data=img_buffer,
+                    file_name="detected_image.png",
+                    mime="image/png"
                 )
-                st.session_state.conf_threshold = new_conf
-                st.session_state.iou_threshold = new_iou
-                st.session_state.adjustment_message = message
-            
-            # Convert detected image to bytes for download
-            img_buffer = BytesIO()
-            detected_image.save(img_buffer, format="PNG")
-            img_buffer.seek(0)
-            
-            # Download button for processed image
-            st.download_button(
-                label="Download Detected Image",
-                data=img_buffer,
-                file_name="detected_image.png",
-                mime="image/png"
-            )
+            except Exception as e:
+                st.error(f"Error processing image: {e}")
+                logger.error(f"Image processing failed: {e}")
 
 if __name__ == "__main__":
     main()
