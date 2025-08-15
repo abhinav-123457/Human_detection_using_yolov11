@@ -13,7 +13,7 @@ RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goog
 
 # Cache the model loading
 @st.cache_resource
-def load_model(model_path="yolo11n_human_detection_final.pt"):
+def load_model(model_path="best (1).pt"):
     return YOLO(model_path)
 
 # Define a video frame processor class
