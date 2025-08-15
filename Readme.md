@@ -1,4 +1,3 @@
-```markdown
 # Human Detection with YOLOv11
 
 This project demonstrates how to train a YOLOv11 model for human detection using a custom dataset in Google Colab. The trained model is saved to Google Drive for future use.
