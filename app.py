@@ -77,13 +77,15 @@ def auto_adjust_thresholds(detection_count, current_conf, current_iou):
     iou_step = 0.05
 
     if detection_count > max_detections:
-        new_conf = min(current_conf + conf_step, 1.0)
-        new_iou = current_iou
-        return new_conf, new_iou, "Increased confidence threshold to reduce detections."
+        # Too many detections, possibly overlapping boxes
+        new_conf = min(current_conf + conf_step, 1.0)  # Increase confidence to be stricter
+        new_iou = max(current_iou - iou_step, 0.1)    # Decrease IoU to enable stricter NMS
+        return new_conf, new_iou, "Increased confidence and decreased IoU to reduce overlapping detections."
     elif detection_count < min_detections:
+        # Too few detections, be more lenient
         new_conf = max(current_conf - conf_step, 0.1)
-        new_iou = current_iou
-        return new_conf, new_iou, "Decreased confidence threshold to increase detections."
+        new_iou = min(current_iou + iou_step, 1.0)    # Increase IoU to be less strict
+        return new_conf, new_iou, "Decreased confidence and increased IoU to increase detections."
     else:
         return current_conf, current_iou, "Thresholds unchanged: detection count within range."
 
@@ -101,7 +103,7 @@ def main():
     if 'conf_threshold' not in st.session_state:
         st.session_state.conf_threshold = 0.10  # Fixed default Confidence Threshold
     if 'iou_threshold' not in st.session_state:
-        st.session_state.iou_threshold = 1.0    # Fixed default IoU Threshold
+        st.session_state.iou_threshold = 0.45   # Adjusted default IoU Threshold for NMS
     if 'auto_adjust' not in st.session_state:
         st.session_state.auto_adjust = False
     if 'adjustment_message' not in st.session_state:
