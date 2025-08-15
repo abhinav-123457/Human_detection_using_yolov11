@@ -10,6 +10,11 @@ import os
 # RTC configuration for WebRTC
 RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
 
+# Cache the model loading
+@st.cache_resource
+def load_model(model_path="yolo11n_human_detection_final.pt"):
+    return YOLO(model_path)
+
 # Define a video frame processor class
 class VideoProcessor:
     def __init__(self, model, conf_threshold, iou_threshold):
@@ -51,6 +56,7 @@ def main():
     st.markdown("""
         This app performs real-time human detection using a trained YOLOv11 model.
         Use your webcam for live detection or upload an image for static analysis.
+        The model is cached for faster loading.
     """)
     
     # Sidebar configuration
@@ -81,11 +87,11 @@ def main():
         help="Intersection over Union threshold for Non-Max Suppression"
     )
     
-    # Load model
-    model = best (1).pt
+    # Load model with caching
+    model = None
     if model_path and os.path.exists(model_path):
         try:
-            model = YOLO(model_path)
+            model = load_model(model_path)
             st.sidebar.success("Model loaded successfully!")
         except Exception as e:
             st.sidebar.error(f"Error loading model: {e}")
@@ -128,9 +134,10 @@ def main():
             st.image(detected_image, caption="Detected Humans", use_column_width=True)
             
             # Download button for processed image
+            img_buffer = detected_image._to_bytes(format="PNG")
             st.download_button(
                 label="Download Detected Image",
-                data=detected_image._to_bytes(format="PNG"),
+                data=img_buffer,
                 file_name="detected_image.png",
                 mime="image/png"
             )
