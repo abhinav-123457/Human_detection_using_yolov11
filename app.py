@@ -84,6 +84,16 @@ def main():
         The model is cached for faster loading. Auto-adjustment of thresholds is available.
     """)
     
+    # Initialize session state early
+    if 'conf_threshold' not in st.session_state:
+        st.session_state.conf_threshold = 0.5
+    if 'iou_threshold' not in st.session_state:
+        st.session_state.iou_threshold = 0.45
+    if 'auto_adjust' not in st.session_state:
+        st.session_state.auto_adjust = False
+    if 'adjustment_message' not in st.session_state:
+        st.session_state.adjustment_message = ""
+
     # Sidebar configuration
     st.sidebar.header("Model Configuration")
     
@@ -94,16 +104,6 @@ def main():
         help="Path to your trained YOLOv11 model (.pt file)"
     )
     
-    # Initialize session state for thresholds
-    if 'conf_threshold' not in st.session_state:
-        st.session_state.conf_threshold = 0.5
-    if 'iou_threshold' not in st.session_state:
-        st.session_state.iou_threshold = 0.45
-    if 'auto_adjust' not in st.session_state:
-        st.session_state.auto_adjust = False
-    if 'adjustment_message' not in st.session_state:
-        st.session_state.adjustment_message = ""
-
     # Auto-adjustment toggle
     st.session_state.auto_adjust = st.sidebar.checkbox(
         "Enable Auto-Adjustment of Thresholds",
@@ -160,11 +160,12 @@ def main():
         st.header("Webcam Detection")
         st.write("Click 'Start' to begin real-time human detection using your webcam.")
         
+        # Pass current threshold values directly to avoid session state issues
         webrtc_ctx = webrtc_streamer(
             key="human-detection",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=lambda: VideoProcessor(model, st.session_state.conf_threshold, st.session_state.iou_threshold),
+            video_processor_factory=lambda: VideoProcessor(model, conf_threshold, iou_threshold),
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
