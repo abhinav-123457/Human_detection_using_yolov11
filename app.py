@@ -84,11 +84,11 @@ def main():
         The model is cached for faster loading. Auto-adjustment of thresholds is available.
     """)
     
-    # Initialize session state early
+    # Initialize session state early with fixed default values
     if 'conf_threshold' not in st.session_state:
-        st.session_state.conf_threshold = 0.5
+        st.session_state.conf_threshold = 0.10  # Fixed default Confidence Threshold
     if 'iou_threshold' not in st.session_state:
-        st.session_state.iou_threshold = 0.45
+        st.session_state.iou_threshold = 1.0    # Fixed default IoU Threshold
     if 'auto_adjust' not in st.session_state:
         st.session_state.auto_adjust = False
     if 'adjustment_message' not in st.session_state:
