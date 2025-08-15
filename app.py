@@ -82,7 +82,7 @@ def main():
     )
     
     # Load model
-    model = best(1).pt
+    model = best (1).pt
     if model_path and os.path.exists(model_path):
         try:
             model = YOLO(model_path)
