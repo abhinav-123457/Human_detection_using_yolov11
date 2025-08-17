@@ -54,7 +54,7 @@ class VideoProcessor:
             annotated_img = img.copy()
             for box, class_id, conf in zip(boxes, class_ids, confidences):
                 x1, y1, x2, y2 = map(int, box)
-                label = "human"  # Force label to "human"
+                label = f"human {conf:.2f}"  # Add confidence to label
                 # Draw green rectangle
                 cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 # Draw label background
@@ -89,7 +89,7 @@ def process_image(image, model, conf_threshold, iou_threshold):
         annotated_img = img_array.copy()
         for box, class_id, conf in zip(boxes, class_ids, confidences):
             x1, y1, x2, y2 = map(int, box)
-            label = "human"  # Force label to "human"
+            label = f"human {conf:.2f}"  # Add confidence to label
             # Draw green rectangle
             cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             # Draw label background
@@ -111,6 +111,7 @@ def main():
     st.markdown("""
         This app performs real-time human detection using a trained YOLOv11 model.
         Use your webcam for live detection or upload an image for static analysis.
+        Now with improved webcam auto-focus and confidence scores on labels.
     """)
     
     # Fixed thresholds
@@ -118,26 +119,27 @@ def main():
     iou_threshold = 0.45
     model_path = "yolo11n_human_detection_final.pt"
     
-    # Load model
-    model = None
-    if os.path.exists(model_path):
-        try:
-            model = load_model(model_path)
-            st.success(f"Model loaded successfully! Class names: {model.names}")
-        except Exception as e:
-            st.error(f"Error loading model: {e}")
-            logger.error(f"Model loading failed: {e}")
+    # Load model with spinner
+    with st.spinner("Loading model..."):
+        model = None
+        if os.path.exists(model_path):
+            try:
+                model = load_model(model_path)
+                st.success(f"Model loaded successfully! Class names: {model.names}")
+            except Exception as e:
+                st.error(f"Error loading model: {e}")
+                logger.error(f"Model loading failed: {e}")
+                return
+        else:
+            st.error("Model file not found.")
             return
-    else:
-        st.error("Model file not found.")
-        return
     
     # Tabs for webcam and image upload
     tab1, tab2 = st.tabs(["Webcam Detection", "Image Upload"])
     
     with tab1:
         st.header("Webcam Detection")
-        st.write("Click 'Start' to begin real-time human detection using your webcam.")
+        st.write("Click 'Start' to begin real-time human detection using your webcam. The camera will auto-focus continuously.")
         
         try:
             webrtc_ctx = webrtc_streamer(
@@ -145,7 +147,14 @@ def main():
                 mode=WebRtcMode.SENDRECV,
                 rtc_configuration=RTC_CONFIGURATION,
                 video_processor_factory=lambda: VideoProcessor(model, conf_threshold, iou_threshold),
-                media_stream_constraints={"video": True, "audio": False},
+                media_stream_constraints={
+                    "video": {
+                        "focusMode": "continuous",
+                        "width": {"ideal": 1280},
+                        "height": {"ideal": 720}
+                    },
+                    "audio": False
+                },
                 async_processing=True,
             )
             
@@ -167,8 +176,8 @@ def main():
                 image = Image.open(uploaded_file)
                 st.image(image, caption="Uploaded Image", use_column_width=True)
                 
-                st.write("Processing image...")
-                detected_image, detection_count = process_image(image, model, conf_threshold, iou_threshold)
+                with st.spinner("Processing image..."):
+                    detected_image, detection_count = process_image(image, model, conf_threshold, iou_threshold)
                 st.image(detected_image, caption=f"Detected Humans ({detection_count} detections)", use_column_width=True)
                 
                 img_buffer = BytesIO()
