@@ -21,8 +21,7 @@ RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goog
 def load_model(model_path="yolo11n_human_detection_final.pt"):
     try:
         model = YOLO(model_path)
-        model.names = {0: "human"}  # Set class name
-        logger.info("Model loaded with class names: {}".format(model.names))
+        logger.info(f"Model loaded successfully. Class names: {model.names}")
         return model
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
@@ -46,17 +45,22 @@ class VideoProcessor:
                 verbose=False
             )
             
+            # Get boxes and class IDs
             boxes = results[0].boxes.xyxy.cpu().numpy()
             class_ids = results[0].boxes.cls.cpu().numpy()
             confidences = results[0].boxes.conf.cpu().numpy()
             
+            # Draw custom boxes and labels
             annotated_img = img.copy()
             for box, class_id, conf in zip(boxes, class_ids, confidences):
                 x1, y1, x2, y2 = map(int, box)
-                label = "human"
+                label = "human"  # Force label to "human"
+                # Draw green rectangle
                 cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                # Draw label background
                 label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                 cv2.rectangle(annotated_img, (x1, y1 - label_size[1] - 10), (x1 + label_size[0], y1), (0, 255, 0), -1)
+                # Draw label text
                 cv2.putText(annotated_img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             
             return av.VideoFrame.from_ndarray(annotated_img, format="bgr24")
@@ -76,17 +80,22 @@ def process_image(image, model, conf_threshold, iou_threshold):
             verbose=False
         )
         
+        # Get boxes and class IDs
         boxes = results[0].boxes.xyxy.cpu().numpy()
-        class_ids = results[0].boxes.cls.cls.cpu().numpy()
+        class_ids = results[0].boxes.cls.cpu().numpy()
         confidences = results[0].boxes.conf.cpu().numpy()
         
+        # Draw custom boxes and labels
         annotated_img = img_array.copy()
         for box, class_id, conf in zip(boxes, class_ids, confidences):
             x1, y1, x2, y2 = map(int, box)
-            label = "human"
+            label = "human"  # Force label to "human"
+            # Draw green rectangle
             cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # Draw label background
             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             cv2.rectangle(annotated_img, (x1, y1 - label_size[1] - 10), (x1 + label_size[0], y1), (0, 255, 0), -1)
+            # Draw label text
             cv2.putText(annotated_img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
         annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
@@ -114,7 +123,7 @@ def main():
     if os.path.exists(model_path):
         try:
             model = load_model(model_path)
-            st.success("Model loaded successfully!")
+            st.success(f"Model loaded successfully! Class names: {model.names}")
         except Exception as e:
             st.error(f"Error loading model: {e}")
             logger.error(f"Model loading failed: {e}")
