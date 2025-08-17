@@ -2,30 +2,33 @@ import streamlit as st
 from ultralytics import YOLO
 import cv2
 import numpy as np
-from PIL import Image
-from io import BytesIO
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
-import os
 import logging
 
 # Set up logging for debugging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# RTC configuration for WebRTC
-RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+# RTC configuration with multiple STUN servers for reliability
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun4.l.google.com:19302"]}
+    ]
+})
 
 # Cache the model loading
 @st.cache_resource
-def load_model(model_path="yolo11n_human_detection_final.pt"):
+def load_model(model_path="best.pt"):
     try:
+        logger.info(f"Loading model from {model_path}")
         return YOLO(model_path)
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         raise
 
-# Define a video frame processor class
+# Define a video frame processor class for WebRTC
 class VideoProcessor:
     def __init__(self, model, conf_threshold, iou_threshold):
         self.model = model
@@ -50,64 +53,20 @@ class VideoProcessor:
             logger.error(f"Error processing webcam frame: {e}")
             raise
 
-# Function to process uploaded images
-def process_image(image, model, conf_threshold, iou_threshold):
-    try:
-        img_array = np.array(image)
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-        results = model.predict(
-            img_array,
-            conf=conf_threshold,
-            iou=iou_threshold,
-            verbose=False
-        )
-        # Draw bounding boxes with only "human" label
-        annotated_img = results[0].plot(labels=True, conf=False)
-        annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(annotated_img), len(results[0].boxes)
-    except Exception as e:
-        logger.error(f"Error processing image: {e}")
-        raise
-
-# Auto-adjust thresholds based on detection count
-def auto_adjust_thresholds(detection_count, current_conf, current_iou):
-    min_detections = 1  # Minimum desired detections
-    max_detections = 10  # Maximum desired detections
-    conf_step = 0.05
-    iou_step = 0.05
-
-    if detection_count > max_detections:
-        # Too many detections, possibly overlapping boxes
-        new_conf = min(current_conf + conf_step, 1.0)  # Increase confidence to be stricter
-        new_iou = max(current_iou - iou_step, 0.1)    # Decrease IoU to enable stricter NMS
-        return new_conf, new_iou, "Increased confidence and decreased IoU to reduce overlapping detections."
-    elif detection_count < min_detections:
-        # Too few detections, be more lenient
-        new_conf = max(current_conf - conf_step, 0.1)
-        new_iou = min(current_iou + iou_step, 1.0)    # Increase IoU to be less strict
-        return new_conf, new_iou, "Decreased confidence and increased IoU to increase detections."
-    else:
-        return current_conf, current_iou, "Thresholds unchanged: detection count within range."
-
 def main():
     st.set_page_config(page_title="YOLOv11 Human Detection", layout="wide")
     
-    st.title("Real-Time Human Detection with YOLOv11")
+    st.title("🎥 Real-Time Human Detection in Thermal Feed")
     st.markdown("""
-        This app performs real-time human detection using a trained YOLOv11 model.
-        Use your webcam for live detection or upload an image for static analysis.
-        The model is cached for faster loading. Auto-adjustment of thresholds is available.
+        This app uses your webcam to detect humans in real-time using a trained YOLOv11 model.
+        The model is cached for faster loading. Adjust settings in the sidebar.
     """)
     
-    # Initialize session state early with fixed default values
+    # Initialize session state for thresholds and error handling
     if 'conf_threshold' not in st.session_state:
         st.session_state.conf_threshold = 0.10  # Fixed default Confidence Threshold
     if 'iou_threshold' not in st.session_state:
-        st.session_state.iou_threshold = 0.45   # Adjusted default IoU Threshold for NMS
-    if 'auto_adjust' not in st.session_state:
-        st.session_state.auto_adjust = False
-    if 'adjustment_message' not in st.session_state:
-        st.session_state.adjustment_message = ""
+        st.session_state.iou_threshold = 0.45   # Default IoU Threshold for NMS
     if 'webcam_error' not in st.session_state:
         st.session_state.webcam_error = ""
 
@@ -117,26 +76,18 @@ def main():
     # Model path input
     model_path = st.sidebar.text_input(
         "Model Path",
-        value="yolo11n_human_detection_final.pt",
+        value="best.pt",
         help="Path to your trained YOLOv11 model (.pt file)"
     )
     
-    # Auto-adjustment toggle
-    st.session_state.auto_adjust = st.sidebar.checkbox(
-        "Enable Auto-Adjustment of Thresholds",
-        value=st.session_state.auto_adjust,
-        help="Automatically adjust Confidence and IoU thresholds based on detection count"
-    )
-    
-    # Confidence and IoU thresholds (manual sliders, disabled if auto-adjust is on)
+    # Confidence and IoU thresholds
     conf_threshold = st.sidebar.slider(
         "Confidence Threshold",
         min_value=0.1,
         max_value=1.0,
         value=st.session_state.conf_threshold,
         step=0.05,
-        help="Filter detections below this confidence score",
-        disabled=st.session_state.auto_adjust
+        help="Filter detections below this confidence score"
     )
     iou_threshold = st.sidebar.slider(
         "IoU Threshold",
@@ -144,18 +95,16 @@ def main():
         max_value=1.0,
         value=st.session_state.iou_threshold,
         step=0.05,
-        help="Intersection over Union threshold for Non-Max Suppression",
-        disabled=st.session_state.auto_adjust
+        help="Intersection over Union threshold for Non-Max Suppression"
     )
     
-    # Update session state if manual sliders are used
-    if not st.session_state.auto_adjust:
-        st.session_state.conf_threshold = conf_threshold
-        st.session_state.iou_threshold = iou_threshold
+    # Update session state with slider values
+    st.session_state.conf_threshold = conf_threshold
+    st.session_state.iou_threshold = iou_threshold
     
     # Load model with caching
     model = None
-    if model_path and os.path.exists(model_path):
+    if model_path:
         try:
             model = load_model(model_path)
             st.sidebar.success("Model loaded successfully!")
@@ -167,30 +116,27 @@ def main():
         st.sidebar.warning("Please provide a valid model path.")
         return
     
-    # Display adjustment message
-    if st.session_state.adjustment_message:
-        st.sidebar.info(st.session_state.adjustment_message)
+    # Display webcam error if any
+    if st.session_state.webcam_error:
+        st.error(f"Webcam Error: {st.session_state.webcam_error}")
+        st.markdown("""
+            **Troubleshooting Tips**:
+            - Ensure your webcam is connected and accessible.
+            - Check browser permissions for camera access (look for a camera icon in the address bar).
+            - Try a different browser (Chrome or Firefox recommended).
+            - Verify that the STUN servers are accessible (try refreshing the page).
+            - If on Streamlit Cloud, ensure your device has a working webcam.
+        """)
     
-    # Tabs for webcam and image upload
-    tab1, tab2 = st.tabs(["Webcam Detection", "Image Upload"])
+    # Checkbox to start webcam
+    run = st.checkbox("Start Webcam")
     
-    with tab1:
-        st.header("Webcam Detection")
-        st.write("Click 'Start' to begin real-time human detection using your webcam.")
-        
-        # Display webcam error if any
-        if st.session_state.webcam_error:
-            st.error(f"Webcam Error: {st.session_state.webcam_error}")
-            st.markdown("""
-                **Troubleshooting Tips**:
-                - Ensure your webcam is connected and accessible.
-                - Check browser permissions for camera access.
-                - Try a different browser (Chrome or Firefox recommended).
-                - Verify that the STUN server is accessible.
-            """)
-        
-        # Initialize webrtc_streamer with error handling
+    # Placeholder for webcam feed
+    FRAME_WINDOW = st.image([])
+    
+    if run:
         try:
+            logger.info("Initializing webrtc_streamer")
             webrtc_ctx = webrtc_streamer(
                 key="human-detection",
                 mode=WebRtcMode.SENDRECV,
@@ -203,55 +149,21 @@ def main():
             if webrtc_ctx.state.playing:
                 st.info("Webcam detection is active. Adjust settings in the sidebar.")
                 st.session_state.webcam_error = ""  # Clear error if webcam is working
+                # Update FRAME_WINDOW with a placeholder to avoid blank display
+                FRAME_WINDOW.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="Webcam Feed Active")
             else:
                 st.session_state.webcam_error = "Webcam stream not active. Click 'Start' or check your webcam."
+                st.error(st.session_state.webcam_error)
+                FRAME_WINDOW.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="Waiting for Webcam")
         
         except Exception as e:
             st.session_state.webcam_error = f"Failed to initialize webcam: {str(e)}"
             logger.error(f"WebRTC initialization failed: {e}")
             st.error(st.session_state.webcam_error)
-    
-    with tab2:
-        st.header("Image Upload")
-        uploaded_file = st.file_uploader("Upload an image for detection", type=["jpg", "jpeg", "png"])
-        
-        if uploaded_file is not None:
-            try:
-                # Display uploaded image
-                image = Image.open(uploaded_file)
-                st.image(image, caption="Uploaded Image", use_column_width=True)
-                
-                # Process and display detected image
-                st.write("Processing image...")
-                detected_image, detection_count = process_image(image, model, st.session_state.conf_threshold, st.session_state.iou_threshold)
-                st.image(detected_image, caption=f"Detected Humans ({detection_count} detections)", use_column_width=True)
-                
-                # Auto-adjust thresholds if enabled
-                if st.session_state.auto_adjust:
-                    new_conf, new_iou, message = auto_adjust_thresholds(
-                        detection_count,
-                        st.session_state.conf_threshold,
-                        st.session_state.iou_threshold
-                    )
-                    st.session_state.conf_threshold = new_conf
-                    st.session_state.iou_threshold = new_iou
-                    st.session_state.adjustment_message = message
-                
-                # Convert detected image to bytes for download
-                img_buffer = BytesIO()
-                detected_image.save(img_buffer, format="PNG")
-                img_buffer.seek(0)
-                
-                # Download button for processed image
-                st.download_button(
-                    label="Download Detected Image",
-                    data=img_buffer,
-                    file_name="detected_image.png",
-                    mime="image/png"
-                )
-            except Exception as e:
-                st.error(f"Error processing image: {e}")
-                logger.error(f"Image processing failed: {e}")
+            FRAME_WINDOW.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="Webcam Initialization Failed")
+    else:
+        # Display placeholder when webcam is not running
+        FRAME_WINDOW.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="Webcam Not Started")
 
 if __name__ == "__main__":
     main()
