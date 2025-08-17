@@ -24,32 +24,23 @@ RTC_CONFIGURATION = RTCConfiguration({
 
 # Cache the YOLO model loading
 @st.cache_resource
-def load_yolo_model(model_path="yolo11n_human_detection_final.pt"):
+def load_yolo_model(model_path, model_type="human"):
     try:
-        return YOLO(model_path)
+        model = YOLO(model_path)
+        logger.info(f"{model_type} YOLO model loaded successfully from {model_path}")
+        return model
     except Exception as e:
-        logger.error(f"Failed to load YOLO model: {e}")
+        logger.error(f"Failed to load {model_type} YOLO model: {e}")
         raise
 
-# Cache the Haar Cascade classifier loading
-@st.cache_resource
-def load_haar_cascade():
-    try:
-        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        if not os.path.exists(cascade_path):
-            raise FileNotFoundError("Haar Cascade file not found")
-        return cv2.CascadeClassifier(cascade_path)
-    except Exception as e:
-        logger.error(f"Failed to load Haar Cascade: {e}")
-        raise
-
-# Video processor for YOLO human detection
+# Video processor for YOLO detection (human or face)
 class YoloVideoProcessor(VideoProcessorBase):
-    def __init__(self, model, conf_threshold, iou_threshold):
+    def __init__(self, model, conf_threshold, iou_threshold, model_type):
         self.model = model
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
-        logger.info(f"YoloVideoProcessor initialized with conf_threshold={conf_threshold}, iou_threshold={iou_threshold}")
+        self.model_type = model_type
+        logger.info(f"YoloVideoProcessor initialized for {model_type} with conf_threshold={conf_threshold}, iou_threshold={iou_threshold}")
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         try:
@@ -64,36 +55,11 @@ class YoloVideoProcessor(VideoProcessorBase):
             annotated_img = results[0].plot(labels=True, conf=False)
             return av.VideoFrame.from_ndarray(annotated_img, format="bgr24")
         except Exception as e:
-            logger.error(f"Error processing YOLO frame: {e}")
-            raise
-
-# Video processor for Haar Cascade face detection
-class FaceVideoProcessor(VideoProcessorBase):
-    def __init__(self, face_cascade, scale_factor=1.1, min_neighbors=5):
-        self.face_cascade = face_cascade
-        self.scale_factor = scale_factor
-        self.min_neighbors = min_neighbors
-        logger.info(f"FaceVideoProcessor initialized with scale_factor={scale_factor}, min_neighbors={min_neighbors}")
-
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        try:
-            img = frame.to_ndarray(format="bgr24")
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=self.scale_factor,
-                minNeighbors=self.min_neighbors,
-                minSize=(30, 30)
-            )
-            for (x, y, w, h) in faces:
-                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
-        except Exception as e:
-            logger.error(f"Error processing face detection frame: {e}")
+            logger.error(f"Error processing {self.model_type} YOLO frame: {e}")
             raise
 
 # Function to process uploaded images for YOLO
-def process_yolo_image(image, model, conf_threshold, iou_threshold):
+def process_yolo_image(image, model, conf_threshold, iou_threshold, model_type):
     try:
         img_array = np.array(image)
         img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
@@ -107,31 +73,11 @@ def process_yolo_image(image, model, conf_threshold, iou_threshold):
         annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
         return Image.fromarray(annotated_img), len(results[0].boxes)
     except Exception as e:
-        logger.error(f"Error processing YOLO image: {e}")
-        raise
-
-# Function to process uploaded images for face detection
-def process_face_image(image, face_cascade, scale_factor, min_neighbors):
-    try:
-        img_array = np.array(image)
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(
-            gray,
-            scaleFactor=scale_factor,
-            minNeighbors=min_neighbors,
-            minSize=(30, 30)
-        )
-        for (x, y, w, h) in faces:
-            cv2.rectangle(img_array, (x, y), (x+w, y+h), (0, 255, 0), 2)
-        annotated_img = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(annotated_img), len(faces)
-    except Exception as e:
-        logger.error(f"Error processing face image: {e}")
+        logger.error(f"Error processing {model_type} YOLO image: {e}")
         raise
 
 # Auto-adjust thresholds for YOLO
-def auto_adjust_thresholds(detection_count, current_conf, current_iou):
+def auto_adjust_thresholds(detection_count, current_conf, current_iou, model_type):
     min_detections = 1
     max_detections = 10
     conf_step = 0.05
@@ -140,130 +86,140 @@ def auto_adjust_thresholds(detection_count, current_conf, current_iou):
     if detection_count > max_detections:
         new_conf = min(current_conf + conf_step, 1.0)
         new_iou = max(current_iou - iou_step, 0.1)
-        return new_conf, new_iou, "Increased confidence and decreased IoU to reduce overlapping detections."
+        return new_conf, new_iou, f"Increased confidence and decreased IoU for {model_type} to reduce overlapping detections."
     elif detection_count < min_detections:
         new_conf = max(current_conf - conf_step, 0.1)
         new_iou = min(current_iou + iou_step, 1.0)
-        return new_conf, new_iou, "Decreased confidence and increased IoU to increase detections."
+        return new_conf, new_iou, f"Decreased confidence and increased IoU for {model_type} to increase detections."
     else:
-        return current_conf, current_iou, "Thresholds unchanged: detection count within range."
+        return current_conf, current_iou, f"Thresholds unchanged for {model_type}: detection count within range."
 
 def main():
-    st.set_page_config(page_title="YOLOv11 & Face Detection", layout="wide")
+    st.set_page_config(page_title="YOLOv11 Human & Face Detection", layout="wide")
     
-    st.title("Real-Time Human and Face Detection")
+    st.title("Real-Time Human and Face Detection with YOLOv11")
     st.markdown("""
-        This app performs real-time human detection using YOLOv11 and face detection using Haar Cascade.
+        This app performs real-time human and face detection using trained YOLOv11 models.
         Use your webcam for live detection or upload an image for static analysis.
-        The models are cached for faster loading. Auto-adjustment of thresholds is available for YOLO.
+        Models are cached for faster loading. Auto-adjustment of thresholds is available.
     """)
     
-    # Initialize session state
-    if 'conf_threshold' not in st.session_state:
-        st.session_state.conf_threshold = 0.10
-    if 'iou_threshold' not in st.session_state:
-        st.session_state.iou_threshold = 0.45
-    if 'auto_adjust' not in st.session_state:
-        st.session_state.auto_adjust = False
-    if 'adjustment_message' not in st.session_state:
-        st.session_state.adjustment_message = ""
-    if 'webcam_error' not in st.session_state:
-        st.session_state.webcam_error = ""
-    if 'face_scale_factor' not in st.session_state:
-        st.session_state.face_scale_factor = 1.1
-    if 'face_min_neighbors' not in st.session_state:
-        st.session_state.face_min_neighbors = 5
+    # Initialize session state with defaults
+    st.session_state.setdefault("human_conf_threshold", 0.10)
+    st.session_state.setdefault("human_iou_threshold", 0.45)
+    st.session_state.setdefault("face_conf_threshold", 0.10)
+    st.session_state.setdefault("face_iou_threshold", 0.45)
+    st.session_state.setdefault("human_auto_adjust", False)
+    st.session_state.setdefault("face_auto_adjust", False)
+    st.session_state.setdefault("adjustment_message", "")
+    st.session_state.setdefault("webcam_error", "")
 
     # Sidebar configuration
     st.sidebar.header("Model Configuration")
     
-    # YOLO model path input
-    model_path = st.sidebar.text_input(
-        "YOLO Model Path",
+    # Human YOLO model path input
+    human_model_path = st.sidebar.text_input(
+        "Human YOLO Model Path",
         value="yolo11n_human_detection_final.pt",
-        help="Path to your trained YOLOv11 model (.pt file)"
+        help="Path to your trained YOLOv11 human detection model (.pt file)"
     )
     
-    # Auto-adjustment toggle for YOLO
-    st.session_state.auto_adjust = st.sidebar.checkbox(
-        "Enable Auto-Adjustment for YOLO Thresholds",
-        value=st.session_state.auto_adjust,
-        help="Automatically adjust YOLO Confidence and IoU thresholds"
+    # Face YOLO model path input
+    face_model_path = st.sidebar.text_input(
+        "Face YOLO Model Path",
+        value="yolo11n_face_detection.pt",
+        help="Path to your trained YOLOv11 face detection model (.pt file)"
     )
     
-    # YOLO thresholds
-    conf_threshold = st.sidebar.slider(
-        "YOLO Confidence Threshold",
+    # Auto-adjustment toggles
+    st.session_state.human_auto_adjust = st.sidebar.checkbox(
+        "Enable Auto-Adjustment for Human Detection Thresholds",
+        value=st.session_state.human_auto_adjust,
+        help="Automatically adjust human detection Confidence and IoU thresholds"
+    )
+    st.session_state.face_auto_adjust = st.sidebar.checkbox(
+        "Enable Auto-Adjustment for Face Detection Thresholds",
+        value=st.session_state.face_auto_adjust,
+        help="Automatically adjust face detection Confidence and IoU thresholds"
+    )
+    
+    # Human detection thresholds
+    human_conf_threshold = st.sidebar.slider(
+        "Human Confidence Threshold",
         min_value=0.1,
         max_value=1.0,
-        value=st.session_state.conf_threshold,
+        value=st.session_state.human_conf_threshold,
         step=0.05,
-        help="Filter YOLO detections below this confidence score",
-        disabled=st.session_state.auto_adjust
+        help="Filter human detections below this confidence score",
+        disabled=st.session_state.human_auto_adjust
     )
-    iou_threshold = st.sidebar.slider(
-        "YOLO IoU Threshold",
+    human_iou_threshold = st.sidebar.slider(
+        "Human IoU Threshold",
         min_value=0.1,
         max_value=1.0,
-        value=st.session_state.iou_threshold,
+        value=st.session_state.human_iou_threshold,
         step=0.05,
-        help="IoU threshold for YOLO Non-Max Suppression",
-        disabled=st.session_state.auto_adjust
+        help="IoU threshold for human Non-Max Suppression",
+        disabled=st.session_state.human_auto_adjust
     )
     
-    # Face detection parameters
-    face_scale_factor = st.sidebar.slider(
-        "Face Detection Scale Factor",
-        min_value=1.05,
-        max_value=1.5,
-        value=st.session_state.face_scale_factor,
+    # Face detection thresholds
+    face_conf_threshold = st.sidebar.slider(
+        "Face Confidence Threshold",
+        min_value=0.1,
+        max_value=1.0,
+        value=st.session_state.face_conf_threshold,
         step=0.05,
-        help="Scale factor for Haar Cascade face detection"
+        help="Filter face detections below this confidence score",
+        disabled=st.session_state.face_auto_adjust
     )
-    face_min_neighbors = st.sidebar.slider(
-        "Face Detection Min Neighbors",
-        min_value=3,
-        max_value=10,
-        value=st.session_state.face_min_neighbors,
-        step=1,
-        help="Minimum neighbors for Haar Cascade face detection"
+    face_iou_threshold = st.sidebar.slider(
+        "Face IoU Threshold",
+        min_value=0.1,
+        max_value=1.0,
+        value=st.session_state.face_iou_threshold,
+        step=0.05,
+        help="IoU threshold for face Non-Max Suppression",
+        disabled=st.session_state.face_auto_adjust
     )
     
-    # Update session state
-    if not st.session_state.auto_adjust:
-        st.session_state.conf_threshold = conf_threshold
-        st.session_state.iou_threshold = iou_threshold
-    st.session_state.face_scale_factor = face_scale_factor
-    st.session_state.face_min_neighbors = face_min_neighbors
+    # Update session state if manual sliders are used
+    if not st.session_state.human_auto_adjust:
+        st.session_state.human_conf_threshold = human_conf_threshold
+        st.session_state.human_iou_threshold = human_iou_threshold
+    if not st.session_state.face_auto_adjust:
+        st.session_state.face_conf_threshold = face_conf_threshold
+        st.session_state.face_iou_threshold = face_iou_threshold
     
     # Load models
-    yolo_model = None
-    face_cascade = None
-    if model_path and os.path.exists(model_path):
+    human_model = None
+    face_model = None
+    if human_model_path and os.path.exists(human_model_path):
         try:
-            yolo_model = load_yolo_model(model_path)
-            st.sidebar.success("YOLO model loaded successfully!")
+            human_model = load_yolo_model(human_model_path, model_type="human")
+            st.sidebar.success("Human YOLO model loaded successfully!")
         except Exception as e:
-            st.sidebar.error(f"Error loading YOLO model: {e}")
-            logger.error(f"YOLO model loading failed: {e}")
-            return
+            st.sidebar.error(f"Error loading human YOLO model: {e}")
+            logger.error(f"Human YOLO model loading failed: {e}")
     else:
-        st.sidebar.warning("Please provide a valid YOLO model path.")
+        st.sidebar.warning("Please provide a valid human YOLO model path.")
     
-    try:
-        face_cascade = load_haar_cascade()
-        st.sidebar.success("Haar Cascade loaded successfully!")
-    except Exception as e:
-        st.sidebar.error(f"Error loading Haar Cascade: {e}")
-        logger.error(f"Haar Cascade loading failed: {e}")
-        return
+    if face_model_path and os.path.exists(face_model_path):
+        try:
+            face_model = load_yolo_model(face_model_path, model_type="face")
+            st.sidebar.success("Face YOLO model loaded successfully!")
+        except Exception as e:
+            st.sidebar.error(f"Error loading face YOLO model: {e}")
+            logger.error(f"Face YOLO model loading failed: {e}")
+    else:
+        st.sidebar.warning("Please provide a valid face YOLO model path.")
     
     # Display adjustment message
     if st.session_state.adjustment_message:
         st.sidebar.info(st.session_state.adjustment_message)
     
     # Tabs for detection modes
-    tab1, tab2, tab3 = st.tabs(["YOLO Webcam Detection", "Face Webcam Detection", "Image Upload"])
+    tab1, tab2, tab3 = st.tabs(["Human Webcam Detection", "Face Webcam Detection", "Image Upload"])
     
     with tab1:
         st.header("YOLO Webcam Human Detection")
@@ -279,66 +235,72 @@ def main():
                 - Verify that the STUN server is accessible.
             """)
         
-        try:
-            webrtc_ctx = webrtc_streamer(
-                key="yolo-human-detection",
-                mode=WebRtcMode.SENDRECV,
-                rtc_configuration=RTC_CONFIGURATION,
-                video_processor_factory=lambda: YoloVideoProcessor(
-                    yolo_model,
-                    st.session_state.conf_threshold,
-                    st.session_state.iou_threshold
-                ),
-                media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 15}}, "audio": False},
-                async_processing=True,
-            )
-            
-            if webrtc_ctx.state.playing:
-                st.info("YOLO webcam detection is active. Adjust settings in the sidebar.")
-                st.session_state.webcam_error = ""
-            else:
-                st.session_state.webcam_error = "YOLO webcam stream not active. Click 'Start' or check your webcam."
-        
-        except Exception as e:
-            st.session_state.webcam_error = f"Failed to initialize YOLO webcam: {str(e)}"
-            logger.error(f"YOLO WebRTC initialization failed: {e}")
-            st.error(st.session_state.webcam_error)
+        if human_model:
+            try:
+                webrtc_ctx = webrtc_streamer(
+                    key="yolo-human-detection",
+                    mode=WebRtcMode.SENDRECV,
+                    rtc_configuration=RTC_CONFIGURATION,
+                    video_processor_factory=lambda: YoloVideoProcessor(
+                        human_model,
+                        st.session_state.human_conf_threshold,
+                        st.session_state.human_iou_threshold,
+                        model_type="human"
+                    ),
+                    media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 15}}, "audio": False},
+                    async_processing=True,
+                )
+                
+                if webrtc_ctx.state.playing:
+                    st.info("Human webcam detection is active. Adjust settings in the sidebar.")
+                    st.session_state.webcam_error = ""
+                else:
+                    st.session_state.webcam_error = "Human webcam stream not active. Click 'Start' or check your webcam."
+            except Exception as e:
+                st.session_state.webcam_error = f"Failed to initialize human webcam: {str(e)}"
+                logger.error(f"Human YOLO WebRTC initialization failed: {e}")
+                st.error(st.session_state.webcam_error)
+        else:
+            st.warning("Human detection model not loaded. Please check the model path.")
     
     with tab2:
-        st.header("Face Webcam Detection")
+        st.header("YOLO Webcam Face Detection")
         st.write("Click 'Start' to begin real-time face detection using your webcam.")
         
         if st.session_state.webcam_error:
             st.error(f"Webcam Error: {st.session_state.webcam_error}")
         
-        try:
-            webrtc_ctx = webrtc_streamer(
-                key="face-detection",
-                mode=WebRtcMode.SENDRECV,
-                rtc_configuration=RTC_CONFIGURATION,
-                video_processor_factory=lambda: FaceVideoProcessor(
-                    face_cascade,
-                    st.session_state.face_scale_factor,
-                    st.session_state.face_min_neighbors
-                ),
-                media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 15}}, "audio": False},
-                async_processing=True,
-            )
-            
-            if webrtc_ctx.state.playing:
-                st.info("Face detection webcam is active. Adjust settings in the sidebar.")
-                st.session_state.webcam_error = ""
-            else:
-                st.session_state.webcam_error = "Face detection webcam stream not active. Click 'Start' or check your webcam."
-        
-        except Exception as e:
-            st.session_state.webcam_error = f"Failed to initialize face detection webcam: {str(e)}"
-            logger.error(f"Face WebRTC initialization failed: {e}")
-            st.error(st.session_state.webcam_error)
+        if face_model:
+            try:
+                webrtc_ctx = webrtc_streamer(
+                    key="yolo-face-detection",
+                    mode=WebRtcMode.SENDRECV,
+                    rtc_configuration=RTC_CONFIGURATION,
+                    video_processor_factory=lambda: YoloVideoProcessor(
+                        face_model,
+                        st.session_state.face_conf_threshold,
+                        st.session_state.face_iou_threshold,
+                        model_type="face"
+                    ),
+                    media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 15}}, "audio": False},
+                    async_processing=True,
+                )
+                
+                if webrtc_ctx.state.playing:
+                    st.info("Face webcam detection is active. Adjust settings in the sidebar.")
+                    st.session_state.webcam_error = ""
+                else:
+                    st.session_state.webcam_error = "Face webcam stream not active. Click 'Start' or check your webcam."
+            except Exception as e:
+                st.session_state.webcam_error = f"Failed to initialize face webcam: {str(e)}"
+                logger.error(f"Face YOLO WebRTC initialization failed: {e}")
+                st.error(st.session_state.webcam_error)
+        else:
+            st.warning("Face detection model not loaded. Please check the model path.")
     
     with tab3:
         st.header("Image Upload")
-        detection_mode = st.radio("Select Detection Mode", ["YOLO Human Detection", "Face Detection"])
+        detection_mode = st.radio("Select Detection Mode", ["Human Detection", "Face Detection"])
         uploaded_file = st.file_uploader("Upload an image for detection", type=["jpg", "jpeg", "png"])
         
         if uploaded_file is not None:
@@ -347,32 +309,54 @@ def main():
                 st.image(image, caption="Uploaded Image", use_column_width=True)
                 
                 st.write("Processing image...")
-                if detection_mode == "YOLO Human Detection":
-                    detected_image, detection_count = process_yolo_image(
-                        image,
-                        yolo_model,
-                        st.session_state.conf_threshold,
-                        st.session_state.iou_threshold
-                    )
-                    caption = f"Detected Humans ({detection_count} detections)"
-                    
-                    if st.session_state.auto_adjust:
-                        new_conf, new_iou, message = auto_adjust_thresholds(
-                            detection_count,
-                            st.session_state.conf_threshold,
-                            st.session_state.iou_threshold
+                if detection_mode == "Human Detection":
+                    if human_model:
+                        detected_image, detection_count = process_yolo_image(
+                            image,
+                            human_model,
+                            st.session_state.human_conf_threshold,
+                            st.session_state.human_iou_threshold,
+                            model_type="human"
                         )
-                        st.session_state.conf_threshold = new_conf
-                        st.session_state.iou_threshold = new_iou
-                        st.session_state.adjustment_message = message
+                        caption = f"Detected Humans ({detection_count} detections)"
+                        
+                        if st.session_state.human_auto_adjust:
+                            new_conf, new_iou, message = auto_adjust_thresholds(
+                                detection_count,
+                                st.session_state.human_conf_threshold,
+                                st.session_state.human_iou_threshold,
+                                model_type="human"
+                            )
+                            st.session_state.human_conf_threshold = new_conf
+                            st.session_state.human_iou_threshold = new_iou
+                            st.session_state.adjustment_message = message
+                    else:
+                        st.error("Human detection model not loaded. Please check the model path.")
+                        return
                 else:
-                    detected_image, detection_count = process_face_image(
-                        image,
-                        face_cascade,
-                        st.session_state.face_scale_factor,
-                        st.session_state.face_min_neighbors
-                    )
-                    caption = f"Detected Faces ({detection_count} faces)"
+                    if face_model:
+                        detected_image, detection_count = process_yolo_image(
+                            image,
+                            face_model,
+                            st.session_state.face_conf_threshold,
+                            st.session_state.face_iou_threshold,
+                            model_type="face"
+                        )
+                        caption = f"Detected Faces ({detection_count} faces)"
+                        
+                        if st.session_state.face_auto_adjust:
+                            new_conf, new_iou, message = auto_adjust_thresholds(
+                                detection_count,
+                                st.session_state.face_conf_threshold,
+                                st.session_state.face_iou_threshold,
+                                model_type="face"
+                            )
+                            st.session_state.face_conf_threshold = new_conf
+                            st.session_state.face_iou_threshold = new_iou
+                            st.session_state.adjustment_message = message
+                    else:
+                        st.error("Face detection model not loaded. Please check the model path.")
+                        return
                 
                 st.image(detected_image, caption=caption, use_column_width=True)
                 
