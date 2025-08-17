@@ -29,9 +29,6 @@ def get_available_cameras(max_index=5):
         if cap.isOpened():
             available_cameras.append(i)
             cap.release()
-            logger.info(f"Webcam found at index {i}")
-        else:
-            logger.debug(f"No webcam at index {i}")
     return available_cameras
 
 # Function to process a single frame
@@ -43,6 +40,7 @@ def process_frame(img, model, conf_threshold, iou_threshold):
             iou=iou_threshold,
             verbose=False
         )
+        # Draw bounding boxes with only "human" label
         annotated_img = results[0].plot(labels=True, conf=False)
         detection_count = len(results[0].boxes)
         return annotated_img, detection_count
@@ -61,6 +59,7 @@ def process_image(image, model, conf_threshold, iou_threshold):
             iou=iou_threshold,
             verbose=False
         )
+        # Draw bounding boxes with only "human" label
         annotated_img = results[0].plot(labels=True, conf=False)
         annotated_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
         return Image.fromarray(annotated_img), len(results[0].boxes)
@@ -70,8 +69,8 @@ def process_image(image, model, conf_threshold, iou_threshold):
 
 # Auto-adjust thresholds based on detection count
 def auto_adjust_thresholds(detection_count, current_conf, current_iou):
-    min_detections = 1
-    max_detections = 10
+    min_detections = 1  # Minimum desired detections
+    max_detections = 10  # Maximum desired detections
     conf_step = 0.05
     iou_step = 0.05
 
@@ -93,6 +92,7 @@ def main():
     st.markdown("""
         This app performs real-time human detection using a trained YOLOv11 model.
         Use your webcam for live detection or upload an image for static analysis.
+        The model is cached for faster loading. Auto-adjustment of thresholds is available.
     """)
     
     # Initialize session state
@@ -150,19 +150,14 @@ def main():
         st.session_state.iou_threshold = iou_threshold
     
     # Detect available cameras
-    if st.sidebar.button("Refresh Camera List"):
-        st.session_state.available_cameras = get_available_cameras()
-    
-    if 'available_cameras' not in st.session_state:
-        st.session_state.available_cameras = get_available_cameras()
-    
-    if not st.session_state.available_cameras:
+    available_cameras = get_available_cameras()
+    if not available_cameras:
         st.session_state.webcam_error = "No webcams detected. Please connect a webcam and try again."
     else:
         st.sidebar.selectbox(
             "Select Webcam",
-            options=st.session_state.available_cameras,
-            index=st.session_state.available_cameras.index(st.session_state.webcam_index) if st.session_state.webcam_index in st.session_state.available_cameras else 0,
+            options=available_cameras,
+            index=available_cameras.index(st.session_state.webcam_index) if st.session_state.webcam_index in available_cameras else 0,
             key="webcam_index_select",
             help="Select the webcam index to use"
         )
@@ -196,18 +191,6 @@ def main():
         
         frame_placeholder = st.empty()
         
-        # Fallback placeholder image
-        placeholder_image = np.zeros((480, 640, 3), dtype=np.uint8)
-        placeholder_image = cv2.putText(
-            placeholder_image,
-            "No webcam feed available",
-            (50, 240),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (255, 255, 255),
-            2
-        )
-        
         if start_button:
             st.session_state.webcam_active = True
             st.session_state.webcam_error = ""
@@ -221,18 +204,17 @@ def main():
                 st.session_state.webcam_error = f"Failed to access webcam at index {st.session_state.webcam_index}. Try a different index or check webcam connection."
                 st.session_state.webcam_active = False
                 logger.error(f"Failed to open webcam at index {st.session_state.webcam_index}")
-                frame_placeholder.image(placeholder_image, caption="No webcam feed", use_column_width=True)
             else:
                 try:
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # Lower resolution for performance
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                    # Set webcam resolution to reduce processing load (optional)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     
                     while st.session_state.webcam_active:
                         ret, frame = cap.read()
                         if not ret:
                             st.session_state.webcam_error = f"Failed to capture frame from webcam at index {st.session_state.webcam_index}."
                             st.session_state.webcam_active = False
-                            frame_placeholder.image(placeholder_image, caption="No webcam feed", use_column_width=True)
                             break
                         
                         annotated_frame, detection_count = process_frame(
@@ -252,13 +234,12 @@ def main():
                             st.session_state.iou_threshold = new_iou
                             st.session_state.adjustment_message = message
                         
-                        time.sleep(0.05)  # ~20 FPS for smoother performance
+                        time.sleep(0.03)  # ~30 FPS
                 
                 except Exception as e:
                     st.session_state.webcam_error = f"Error processing webcam feed: {str(e)}"
                     logger.error(f"Webcam processing failed: {e}")
                     st.session_state.webcam_active = False
-                    frame_placeholder.image(placeholder_image, caption="No webcam feed", use_column_width=True)
                 finally:
                     cap.release()
         
@@ -271,10 +252,7 @@ def main():
                 - Check system permissions for camera access (Settings > Privacy > Camera).
                 - Verify OpenCV is installed (`pip install opencv-python`).
                 - Update webcam drivers or try a different USB port.
-                - Run a test script to debug: `python -c "import cv2; cap=cv2.VideoCapture(0); print('Open' if cap.isOpened() else 'Closed'); cap.release()"`
             """)
-        else:
-            frame_placeholder.image(placeholder_image, caption="No webcam feed", use_column_width=True)
     
     with tab2:
         st.header("Image Upload")
