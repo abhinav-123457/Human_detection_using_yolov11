@@ -1,33 +1,22 @@
 import cv2
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 
-def detect_faces():
-    faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    cap = cv2.VideoCapture(0)
-    
-    st.title("Real-Time Face Detection")
-    frame_placeholder = st.empty()
+st.title("Real-Time Face Detection")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Failed to capture image from webcam.")
-            break
+class FaceDetection(VideoTransformerBase):
+    def __init__(self):
+        # Load the Haar Cascade once
+        self.faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = faceCascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-
+    def transform(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = self.faceCascade.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+        )
         for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        return img
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_placeholder.image(frame, channels="RGB")
-
-        if st.button("Stop Webcam"):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    detect_faces()
+webrtc_streamer(key="face-detection", video_transformer_factory=FaceDetection)
