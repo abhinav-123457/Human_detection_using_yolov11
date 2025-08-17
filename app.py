@@ -4,17 +4,13 @@ import cv2
 import numpy as np
 from PIL import Image
 from io import BytesIO
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import av
 import os
 import logging
+import time
 
 # Set up logging for debugging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# RTC configuration for WebRTC
-RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
 
 # Cache the model loading
 @st.cache_resource
@@ -25,30 +21,22 @@ def load_model(model_path="yolo11n_human_detection_final.pt"):
         logger.error(f"Failed to load model: {e}")
         raise
 
-# Define a video frame processor class
-class VideoProcessor:
-    def __init__(self, model, conf_threshold, iou_threshold):
-        self.model = model
-        self.conf_threshold = conf_threshold
-        self.iou_threshold = iou_threshold
-        logger.info(f"VideoProcessor initialized with conf_threshold={conf_threshold}, iou_threshold={iou_threshold}")
-
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        try:
-            img = frame.to_ndarray(format="bgr24")
-            # Run YOLO inference
-            results = self.model.predict(
-                img,
-                conf=self.conf_threshold,
-                iou=self.iou_threshold,
-                verbose=False
-            )
-            # Draw bounding boxes with only "human" label
-            annotated_img = results[0].plot(labels=True, conf=False)
-            return av.VideoFrame.from_ndarray(annotated_img, format="bgr24")
-        except Exception as e:
-            logger.error(f"Error processing webcam frame: {e}")
-            raise
+# Function to process a single frame
+def process_frame(img, model, conf_threshold, iou_threshold):
+    try:
+        results = model.predict(
+            img,
+            conf=conf_threshold,
+            iou=iou_threshold,
+            verbose=False
+        )
+        # Draw bounding boxes with only "human" label
+        annotated_img = results[0].plot(labels=True, conf=False)
+        detection_count = len(results[0].boxes)
+        return annotated_img, detection_count
+    except Exception as e:
+        logger.error(f"Error processing frame: {e}")
+        raise
 
 # Function to process uploaded images
 def process_image(image, model, conf_threshold, iou_threshold):
@@ -110,6 +98,8 @@ def main():
         st.session_state.adjustment_message = ""
     if 'webcam_error' not in st.session_state:
         st.session_state.webcam_error = ""
+    if 'webcam_active' not in st.session_state:
+        st.session_state.webcam_active = False
 
     # Sidebar configuration
     st.sidebar.header("Model Configuration")
@@ -176,7 +166,69 @@ def main():
     
     with tab1:
         st.header("Webcam Detection")
-        st.write("Click 'Start' to begin real-time human detection using your webcam.")
+        st.write("Click 'Start Webcam' to begin real-time human detection using your webcam.")
+        
+        # Webcam controls
+        start_button = st.button("Start Webcam")
+        stop_button = st.button("Stop Webcam")
+        
+        # Placeholder for webcam feed
+        frame_placeholder = st.empty()
+        
+        if start_button:
+            st.session_state.webcam_active = True
+            st.session_state.webcam_error = ""
+        
+        if stop_button:
+            st.session_state.webcam_active = False
+        
+        # Webcam processing loop
+        if st.session_state.webcam_active:
+            cap = cv2.VideoCapture(0)  # Open default webcam
+            if not cap.isOpened():
+                st.session_state.webcam_error = "Failed to access webcam. Ensure it is connected and accessible."
+                st.session_state.webcam_active = False
+                logger.error("Webcam access failed")
+            else:
+                try:
+                    while st.session_state.webcam_active:
+                        ret, frame = cap.read()
+                        if not ret:
+                            st.session_state.webcam_error = "Failed to capture frame from webcam."
+                            st.session_state.webcam_active = False
+                            break
+                        
+                        # Process frame
+                        annotated_frame, detection_count = process_frame(
+                            frame, model, st.session_state.conf_threshold, st.session_state.iou_threshold
+                        )
+                        
+                        # Convert to RGB for display
+                        annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                        
+                        # Display frame
+                        frame_placeholder.image(annotated_frame_rgb, caption=f"Webcam Feed ({detection_count} detections)", use_column_width=True)
+                        
+                        # Auto-adjust thresholds if enabled
+                        if st.session_state.auto_adjust:
+                            new_conf, new_iou, message = auto_adjust_thresholds(
+                                detection_count,
+                                st.session_state.conf_threshold,
+                                st.session_state.iou_threshold
+                            )
+                            st.session_state.conf_threshold = new_conf
+                            st.session_state.iou_threshold = new_iou
+                            st.session_state.adjustment_message = message
+                        
+                        # Small delay to prevent overloading Streamlit
+                        time.sleep(0.03)  # ~30 FPS
+                
+                except Exception as e:
+                    st.session_state.webcam_error = f"Error processing webcam feed: {str(e)}"
+                    logger.error(f"Webcam processing failed: {e}")
+                    st.session_state.webcam_active = False
+                finally:
+                    cap.release()
         
         # Display webcam error if any
         if st.session_state.webcam_error:
@@ -184,32 +236,9 @@ def main():
             st.markdown("""
                 **Troubleshooting Tips**:
                 - Ensure your webcam is connected and accessible.
-                - Check browser permissions for camera access.
-                - Try a different browser (Chrome or Firefox recommended).
-                - Verify that the STUN server is accessible.
+                - Check if another application is using the webcam.
+                - Try restarting the app or using a different webcam.
             """)
-        
-        # Initialize webrtc_streamer with error handling
-        try:
-            webrtc_ctx = webrtc_streamer(
-                key="human-detection",
-                mode=WebRtcMode.SENDRECV,
-                rtc_configuration=RTC_CONFIGURATION,
-                video_processor_factory=lambda: VideoProcessor(model, conf_threshold, iou_threshold),
-                media_stream_constraints={"video": True, "audio": False},
-                async_processing=True,
-            )
-            
-            if webrtc_ctx.state.playing:
-                st.info("Webcam detection is active. Adjust settings in the sidebar.")
-                st.session_state.webcam_error = ""  # Clear error if webcam is working
-            else:
-                st.session_state.webcam_error = "Webcam stream not active. Click 'Start' or check your webcam."
-        
-        except Exception as e:
-            st.session_state.webcam_error = f"Failed to initialize webcam: {str(e)}"
-            logger.error(f"WebRTC initialization failed: {e}")
-            st.error(st.session_state.webcam_error)
     
     with tab2:
         st.header("Image Upload")
