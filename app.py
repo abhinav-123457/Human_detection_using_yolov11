@@ -15,7 +15,7 @@ RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goog
 
 # Cache the model loading
 @st.cache_resource
-def load_model(model_path="best.pt"):
+def load_model(model_path="yolo11n_human_detection_final.pt"):
     try:
         return YOLO(model_path)
     except Exception as e:
