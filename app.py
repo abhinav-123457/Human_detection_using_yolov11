@@ -1,49 +1,33 @@
 import cv2
 import streamlit as st
-import numpy as np
-from PIL import Image
 
+def detect_faces():
+    faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    cap = cv2.VideoCapture(0)
+    
+    st.title("Real-Time Face Detection")
+    frame_placeholder = st.empty()
 
-def brighten_image(image, amount):
-    img_bright = cv2.convertScaleAbs(image, beta=amount)
-    return img_bright
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            st.error("Failed to capture image from webcam.")
+            break
 
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = faceCascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
 
-def blur_image(image, amount):
-    blur_img = cv2.GaussianBlur(image, (11, 11), amount)
-    return blur_img
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
 
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_placeholder.image(frame, channels="RGB")
 
-def enhance_details(img):
-    hdr = cv2.detailEnhance(img, sigma_s=12, sigma_r=0.15)
-    return hdr
+        if st.button("Stop Webcam"):
+            break
 
-
-def main_loop():
-    st.title("OpenCV Demo App")
-    st.subheader("This app allows you to play with Image filters!")
-    st.text("We use OpenCV and Streamlit for this demo")
-
-    blur_rate = st.sidebar.slider("Blurring", min_value=0.5, max_value=3.5)
-    brightness_amount = st.sidebar.slider("Brightness", min_value=-50, max_value=50, value=0)
-    apply_enhancement_filter = st.sidebar.checkbox('Enhance Details')
-
-    image_file = st.file_uploader("Upload Your Image", type=['jpg', 'png', 'jpeg'])
-    if not image_file:
-        return None
-
-    original_image = Image.open(image_file)
-    original_image = np.array(original_image)
-
-    processed_image = blur_image(original_image, blur_rate)
-    processed_image = brighten_image(processed_image, brightness_amount)
-
-    if apply_enhancement_filter:
-        processed_image = enhance_details(processed_image)
-
-    st.text("Original Image vs Processed Image")
-    st.image([original_image, processed_image])
-
+    cap.release()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main_loop()
+    detect_faces()
