@@ -9,8 +9,9 @@ import av
 import os
 import logging
 import time
+import asyncio
 
-# Set up logging for debugging
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -29,13 +30,13 @@ def load_model(model_path="yolo11n_human_detection_final.pt"):
     try:
         model = YOLO(model_path)
         if model.device.type == 'cuda':
-            model = model.half()  # Enable half-precision for CUDA
+            model = model.half()
         return model
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         raise
 
-# Define a video frame processor class for WebRTC
+# WebRTC video processor
 class VideoProcessor:
     def __init__(self, model, conf_threshold, iou_threshold, frame_skip=2):
         self.model = model
@@ -75,7 +76,7 @@ class VideoProcessor:
             logger.error(f"Error processing webcam frame: {e}")
             raise
 
-# Function to process a single frame (for OpenCV)
+# Process a single frame (OpenCV)
 def process_frame(img, model, conf_threshold, iou_threshold):
     try:
         results = model.predict(
@@ -94,7 +95,7 @@ def process_frame(img, model, conf_threshold, iou_threshold):
         logger.error(f"Error processing frame: {e}")
         raise
 
-# Function to process uploaded images
+# Process uploaded images
 def process_image(image, model, conf_threshold, iou_threshold):
     try:
         img_array = np.array(image)
@@ -113,7 +114,7 @@ def process_image(image, model, conf_threshold, iou_threshold):
         logger.error(f"Error processing image: {e}")
         raise
 
-# Auto-adjust thresholds based on detection count
+# Auto-adjust thresholds
 def auto_adjust_thresholds(detection_count, current_conf, current_iou):
     min_detections = 1
     max_detections = 10
@@ -131,16 +132,27 @@ def auto_adjust_thresholds(detection_count, current_conf, current_iou):
     else:
         return current_conf, current_iou, "Thresholds unchanged: detection count within range."
 
+# Function to get available WebRTC devices
+async def get_webrtc_devices():
+    try:
+        import webrtcvad
+        devices = await webrtcvad.get_device_list()
+        video_devices = [d['label'] or f"Camera {i}" for i, d in enumerate(devices) if d['kind'] == 'videoinput']
+        return video_devices
+    except Exception as e:
+        logger.error(f"Error fetching WebRTC devices: {e}")
+        return ["Default Camera"]
+
 def main():
     st.set_page_config(page_title="YOLOv11 Human Detection", layout="wide")
     
     st.title("Real-Time Human Detection with YOLOv11")
     st.markdown("""
         This app performs real-time human detection using a trained YOLOv11 model.
-        Use your webcam (via WebRTC or OpenCV) or upload an image for static analysis.
+        Use your webcam (via WebRTC or OpenCV) or upload an image.
     """)
 
-    # Initialize session state at the start
+    # Initialize session state
     if 'conf_threshold' not in st.session_state:
         st.session_state.conf_threshold = 0.10
     if 'iou_threshold' not in st.session_state:
@@ -159,6 +171,8 @@ def main():
         st.session_state.webcam_active = False
     if 'webcam_index' not in st.session_state:
         st.session_state.webcam_index = 0
+    if 'webrtc_device' not in st.session_state:
+        st.session_state.webrtc_device = "Default Camera"
 
     # Sidebar configuration
     st.sidebar.header("Model Configuration")
@@ -172,13 +186,12 @@ def main():
     st.session_state.use_webrtc = st.sidebar.checkbox(
         "Use WebRTC (uncheck for OpenCV)",
         value=st.session_state.use_webrtc,
-        help="Use WebRTC for webcam or OpenCV for lower latency (local only)"
+        help="WebRTC for browser-based access, OpenCV for lower latency (local only)"
     )
     
     st.session_state.auto_adjust = st.sidebar.checkbox(
         "Enable Auto-Adjustment of Thresholds",
-        value=st.session_state.auto_adjust,
-        help="Automatically adjust Confidence and IoU thresholds based on detection count"
+        value=st.session_state.auto_adjust
     )
     
     conf_threshold = st.sidebar.slider(
@@ -187,7 +200,6 @@ def main():
         max_value=1.0,
         value=st.session_state.conf_threshold,
         step=0.05,
-        help="Filter detections below this confidence score",
         disabled=st.session_state.auto_adjust
     )
     iou_threshold = st.sidebar.slider(
@@ -196,19 +208,17 @@ def main():
         max_value=1.0,
         value=st.session_state.iou_threshold,
         step=0.05,
-        help="Intersection over Union threshold for Non-Max Suppression",
         disabled=st.session_state.auto_adjust
     )
     
     st.session_state.frame_skip = st.sidebar.slider(
-        "Frame Skip (1 = process every frame)",
+        "Frame Skip",
         min_value=1,
         max_value=5,
         value=st.session_state.frame_skip,
-        step=1,
-        help="Process every nth frame to reduce latency"
+        step=1
     )
-    
+
     if not st.session_state.auto_adjust:
         st.session_state.conf_threshold = conf_threshold
         st.session_state.iou_threshold = iou_threshold
@@ -218,13 +228,12 @@ def main():
     if model_path and os.path.exists(model_path):
         try:
             model = load_model(model_path)
-            st.sidebar.success(f"Model loaded successfully! Device: {model.device.type}")
+            st.sidebar.success(f"Model loaded! Device: {model.device.type}")
         except Exception as e:
             st.sidebar.error(f"Error loading model: {e}")
-            logger.error(f"Model loading failed: {e}")
             return
     else:
-        st.sidebar.warning("Please provide a valid model path.")
+        st.sidebar.warning("Provide a valid model path.")
         return
     
     if st.session_state.adjustment_message:
@@ -234,22 +243,27 @@ def main():
     
     with tab1:
         st.header("Webcam Detection")
-        st.write("Click 'Start' to begin real-time human detection using your webcam.")
+        st.write("Click 'Start' to begin real-time detection.")
         
         if st.session_state.webcam_error:
             st.error(f"Webcam Error: {st.session_state.webcam_error}")
             st.markdown("""
                 **Troubleshooting Tips**:
-                - Ensure your webcam is connected and accessible.
-                - For WebRTC: Check browser permissions (Settings > Privacy > Camera) and try Chrome/Firefox.
-                - For OpenCV: Try a different webcam index or check system permissions.
+                - **WebRTC**:
+                  - Ensure browser permissions allow camera access (Settings > Privacy > Camera).
+                  - Select the Logitech C270 in the device dropdown.
+                  - Try Chrome/Firefox and disable antivirus webcam protection (e.g., Avast Webcam Shield).
+                - **OpenCV**:
+                  - Try different webcam indices (0, 1, 2).
+                  - Run `pip install opencv-python opencv-contrib-python` to ensure proper backends.
+                  - Close apps like Zoom/Skype that may lock the camera.
+                  - Update Logitech drivers from https://www.logitech.com/.
+                - Check USB connection and try a different port.
                 - Adjust 'Frame Skip' to reduce latency.
-                - Verify OpenCV is installed (`pip install opencv-python`) for OpenCV mode.
             """)
         
         start_button = st.button("Start Webcam")
         stop_button = st.button("Stop Webcam")
-        
         frame_placeholder = st.empty()
         
         if start_button:
@@ -261,6 +275,18 @@ def main():
         
         if st.session_state.webcam_active:
             if st.session_state.use_webrtc:
+                # Get available WebRTC devices
+                try:
+                    video_devices = asyncio.run(get_webrtc_devices())
+                    st.session_state.webrtc_device = st.selectbox(
+                        "Select Webcam",
+                        options=video_devices,
+                        index=video_devices.index(st.session_state.webrtc_device) if st.session_state.webrtc_device in video_devices else 0
+                    )
+                except Exception as e:
+                    st.session_state.webcam_error = f"Failed to list WebRTC devices: {e}"
+                    video_devices = ["Default Camera"]
+                
                 try:
                     webrtc_ctx = webrtc_streamer(
                         key="human-detection",
@@ -269,38 +295,47 @@ def main():
                         video_processor_factory=lambda: VideoProcessor(model, st.session_state.conf_threshold, st.session_state.iou_threshold, st.session_state.frame_skip),
                         media_stream_constraints={
                             "video": {
-                                "width": {"ideal": 320},  # Lower resolution
-                                "height": {"ideal": 240},
-                                "frameRate": {"ideal": 15}  # Lower FPS
+                                "width": {"ideal": 640},
+                                "height": {"ideal": 480},
+                                "frameRate": {"ideal": 15},
+                                "deviceId": {"exact": st.session_state.webrtc_device}
                             },
                             "audio": False
                         },
-                        async_processing=True,
+                        async_processing=True
                     )
                     
-                    if webrtc_ctx.state.playing:
-                        st.info(f"WebRTC detection active. Frame skip: {st.session_state.frame_skip}. FPS: {webrtc_ctx.video_processor.last_fps:.1f if webrtc_ctx.video_processor else 'N/A'}")
+                    if webrtc_ctx.state.playing and webrtc_ctx.video_processor:
+                        st.info(f"WebRTC active. Device: {st.session_state.webrtc_device}. FPS: {webrtc_ctx.video_processor.last_fps:.1f}")
                         st.session_state.webcam_error = ""
                     else:
-                        st.session_state.webcam_error = "WebRTC stream not active. Click 'Start' or check webcam permissions."
+                        st.session_state.webcam_error = "WebRTC stream not active. Select Logitech C270 or check permissions."
+                        frame_placeholder.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="No webcam feed")
                 
                 except Exception as e:
                     st.session_state.webcam_error = f"Failed to initialize WebRTC: {str(e)}"
                     logger.error(f"WebRTC initialization failed: {e}")
-                    frame_placeholder.image(np.zeros((240, 320, 3), dtype=np.uint8), caption="No webcam feed", use_column_width=True)
+                    frame_placeholder.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="No webcam feed")
             else:
-                # OpenCV-based webcam processing
-                cap = cv2.VideoCapture(st.session_state.webcam_index)
+                # OpenCV mode
+                st.session_state.webcam_index = st.number_input(
+                    "Webcam Index",
+                    min_value=0,
+                    max_value=5,
+                    value=st.session_state.webcam_index,
+                    step=1
+                )
+                cap = cv2.VideoCapture(st.session_state.webcam_index, cv2.CAP_DSHOW)
                 if not cap.isOpened():
                     st.session_state.webcam_error = f"Failed to access webcam at index {st.session_state.webcam_index}. Try a different index."
                     st.session_state.webcam_active = False
-                    logger.error(f"Failed to open webcam at index {st.session_state.webcam_index}")
-                    frame_placeholder.image(np.zeros((240, 320, 3), dtype=np.uint8), caption="No webcam feed", use_column_width=True)
+                    frame_placeholder.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="No webcam feed")
                 else:
                     try:
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                         cap.set(cv2.CAP_PROP_FPS, 15)
+                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                         
                         frame_count = 0
                         last_time = time.time()
@@ -317,7 +352,7 @@ def main():
                                     frame, model, st.session_state.conf_threshold, st.session_state.iou_threshold
                                 )
                                 annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                                frame_placeholder.image(annotated_frame_rgb, caption=f"Webcam Feed ({detection_count} detections)", use_column_width=True)
+                                frame_placeholder.image(annotated_frame_rgb, caption=f"Webcam Feed ({detection_count} detections)")
                                 
                                 if st.session_state.auto_adjust:
                                     new_conf, new_iou, message = auto_adjust_thresholds(
@@ -329,7 +364,6 @@ def main():
                                     st.session_state.iou_threshold = new_iou
                                     st.session_state.adjustment_message = message
                             
-                            # Calculate and display FPS
                             current_time = time.time()
                             if current_time - last_time >= 1.0:
                                 fps = frame_count / (current_time - last_time)
@@ -337,28 +371,27 @@ def main():
                                 last_time = current_time
                                 st.metric("Approx. FPS", f"{fps:.1f}")
                             
-                            time.sleep(0.05)  # ~20 FPS max
+                            time.sleep(0.05)
                             
                     except Exception as e:
                         st.session_state.webcam_error = f"Error processing webcam feed: {str(e)}"
-                        logger.error(f"OpenCV processing failed: {e}")
                         st.session_state.webcam_active = False
-                        frame_placeholder.image(np.zeros((240, 320, 3), dtype=np.uint8), caption="No webcam feed", use_column_width=True)
+                        frame_placeholder.image(np.zeros((480, 640, 3), dtype=np.uint8), caption="No webcam feed")
                     finally:
                         cap.release()
     
     with tab2:
         st.header("Image Upload")
-        uploaded_file = st.file_uploader("Upload an image for detection", type=["jpg", "jpeg", "png"])
+        uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
         
         if uploaded_file is not None:
             try:
                 image = Image.open(uploaded_file)
-                st.image(image, caption="Uploaded Image", use_column_width=True)
+                st.image(image, caption="Uploaded Image")
                 
                 st.write("Processing image...")
                 detected_image, detection_count = process_image(image, model, st.session_state.conf_threshold, st.session_state.iou_threshold)
-                st.image(detected_image, caption=f"Detected Humans ({detection_count} detections)", use_column_width=True)
+                st.image(detected_image, caption=f"Detected Humans ({detection_count} detections)")
                 
                 if st.session_state.auto_adjust:
                     new_conf, new_iou, message = auto_adjust_thresholds(
@@ -382,7 +415,6 @@ def main():
                 )
             except Exception as e:
                 st.error(f"Error processing image: {e}")
-                logger.error(f"Image processing failed: {e}")
 
 if __name__ == "__main__":
     main()
